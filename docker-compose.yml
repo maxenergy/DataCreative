@@ -1,0 +1,122 @@
+```yaml
+version: '3.8'
+
+services:
+  label_studio:
+    image: heartexlabs/label-studio:latest # Use the latest official image
+    container_name: agile_ai_label_studio
+    ports:
+      - "8080:8080" # Expose Label Studio UI on host port 8080
+    volumes:
+      - ./data/label_studio_data:/label-studio/data # Persist Label Studio's internal data
+      # If Label Studio needs to serve images directly from the shared volume:
+      # - ./data/images:/app/data/images # Adjust path inside LS container if it serves local files
+    environment:
+      # Basic Label Studio settings
+      - LABEL_STUDIO_USERNAME=admin@example.com # Change as needed
+      - LABEL_STUDIO_PASSWORD=password          # Change as needed
+      - LABEL_STUDIO_BASE_SERVING_URL=/ # If serving from root
+      - DJANGO_DB=default # Use SQLite by default, LS manages this in its volume
+      # - DEBUG=1 # Optional: for more verbose logging from Label Studio
+      # ML Backend related (if LS directly starts ML backend, not common for separate FastAPI)
+      # Instead, you'll configure ML backends via the Label Studio UI,
+      # pointing to the 'backend_api' service URL.
+    depends_on:
+      - backend_api
+    networks:
+      - agile_ai_network
+
+  backend_api:
+    build:
+      context: ./backend_api
+      dockerfile: Dockerfile
+    container_name: agile_ai_backend_api
+    volumes:
+      - ./data/database:/app/data/database # Mount SQLite DB directory
+      - ./data/images:/app/data/images     # Mount shared image storage
+      # For development with live reload:
+      # - ./backend_api/app:/app/app
+    ports:
+      - "8000:8000" # Expose API port (optional, if you want to access it directly from host)
+    environment:
+      - DATABASE_URL=sqlite:///./data/database/metadata.db # Path inside the container
+      - IMAGE_STORAGE_BASE_PATH=./data/images             # Path inside the container
+      # Model Server URLs (these should match service names if on the same Docker network)
+      - YOLO_UNIOW_SERVER_URL=http://yolo_uniow_model_server:8001/infer
+      # Add other model server URLs as they are developed:
+      # - GROUNDING_DINO_SERVER_URL=http://grounding_dino_model_server:8002/infer
+      # - GLIGEN_SERVER_URL=http://gligen_model_server:8003/generate
+      # - CONTROLNET_SERVER_URL=http://controlnet_model_server:8004/edit
+      # - INTERNVL2_SERVER_URL=http://internvl2_model_server:8005/suggest
+    depends_on:
+      - yolo_uniow_model_server # Add dependencies as more model servers come online
+    networks:
+      - agile_ai_network
+    # healthcheck: # Optional healthcheck
+    #   test: ["CMD", "curl", "-f", "http://localhost:8000/"]
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 3
+
+  yolo_uniow_model_server:
+    build:
+      context: ./model_servers/yolo_uniow
+      dockerfile: Dockerfile
+    container_name: agile_ai_yolo_uniow_server
+    volumes:
+      # Mount model weights if they are not part of the Docker image
+      # - ./model_servers/yolo_uniow/weights:/model_server/weights
+      - ./data/images:/model_server/data/images # If model needs direct image access
+    # ports: # Not strictly needed if only backend_api accesses it
+      # - "8001:8001"
+    environment:
+      # - MODEL_PATH=/model_server/weights/yolo_model.pt
+      - NVIDIA_VISIBLE_DEVICES=all # If using GPU
+    deploy: # For GPU support with docker-compose v2.3+
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1 # Or 'all'
+              capabilities: [gpu]
+    networks:
+      - agile_ai_network
+
+  # --- Placeholder services for other models (uncomment and configure as developed) ---
+  # grounding_dino_model_server:
+  #   build: ./model_servers/grounding_dino
+  #   container_name: agile_ai_grounding_dino_server
+  #   # ... similar config to yolo_uniow_model_server ...
+  #   networks:
+  #     - agile_ai_network
+
+  # gligen_model_server:
+  #   build: ./model_servers/gligen
+  #   container_name: agile_ai_gligen_server
+  #   # ... GPU config essential ...
+  #   networks:
+  #     - agile_ai_network
+
+  # controlnet_model_server:
+  #   build: ./model_servers/controlnet_sd3
+  #   container_name: agile_ai_controlnet_server
+  #   # ... GPU config essential ...
+  #   networks:
+  #     - agile_ai_network
+
+  # internvl2_model_server:
+  #   build: ./model_servers/internvl2
+  #   container_name: agile_ai_internvl2_server
+  #   # ... GPU config might be needed ...
+  #   networks:
+  #     - agile_ai_network
+
+volumes:
+  label_studio_data: # Named volume for Label Studio's internal data
+  shared_images:     # If you prefer named volumes over bind mounts for images
+  shared_database:   # If you prefer named volumes for the database
+
+networks:
+  agile_ai_network:
+    driver: bridge
+```
