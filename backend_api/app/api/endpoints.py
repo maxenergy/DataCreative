@@ -6,6 +6,9 @@ import httpx # For making async HTTP requests to model servers
 # Assuming schemas will be defined in backend_api.app.models.schemas
 from ..models import schemas
 from ..core.config import settings # Import settings for model server URLs
+from ..db import crud, database # Import CRUD operations and database session management
+
+from sqlalchemy.orm import Session
 
 router = APIRouter()
 

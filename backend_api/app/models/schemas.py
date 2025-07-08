@@ -1,110 +1,137 @@
 ```python
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
+from datetime import datetime
 
-# --- General Schemas ---
-class Project(BaseModel):
-    project_id: Optional[int] = None
-    project_name: str
-    description: Optional[str] = None
-    config_json: Optional[str] = None # Label Studio labeling config
+# --- Base Schemas (common fields for creation and reading) ---
+
+class ProjectBase(BaseModel):
+    name: str = Field(..., min_length=1, example="Project Alpha")
+    description: Optional[str] = Field(None, example="Initial project for detecting cars.")
+    config_json: Optional[str] = Field(None, example="<View>...</View>") # Label Studio labeling config
+
+class ProjectCreate(ProjectBase):
+    pass
+
+class Project(ProjectBase):
+    id: int
+    created_at: datetime # Should be populated by DB default
+    updated_at: Optional[datetime] = None # Should be populated by DB on update
 
     class Config:
         orm_mode = True
 
-class Image(BaseModel):
-    image_id: Optional[int] = None
+class ImageBase(BaseModel):
+    original_file_path: str = Field(..., example="/data/images/project_1/original/img_001.jpg")
+    generated_file_path: Optional[str] = Field(None, example="/data/images/project_1/generated/img_001_gen.jpg")
+    width: Optional[int] = Field(None, example=1920)
+    height: Optional[int] = Field(None, example=1080)
+    source_image_id: Optional[int] = Field(None, description="If generated, ID of the base image.")
+    generation_params_json: Optional[str] = Field(None, description="e.g., prompt, model used for generation.")
+
+class ImageCreate(ImageBase):
     project_id: int
-    original_file_path: str
-    generated_file_path: Optional[str] = None
-    width: Optional[int] = None
-    height: Optional[int] = None
-    source_image_id: Optional[int] = None
-    generation_params_json: Optional[str] = None
 
-    class Config:
-        orm_mode = True
-
-class Label(BaseModel):
-    label_id: Optional[int] = None
+class Image(ImageBase):
+    id: int
     project_id: int
-    label_name: str
-    color_hex: Optional[str] = None
+    uploaded_at: datetime # Should be populated by DB default
 
     class Config:
         orm_mode = True
 
-class Annotation(BaseModel):
-    annotation_id: Optional[int] = None
+class LabelBase(BaseModel):
+    name: str = Field(..., min_length=1, example="car")
+    color_hex: Optional[str] = Field(None, example="#FF0000")
+
+class LabelCreate(LabelBase):
+    project_id: int
+
+class Label(LabelBase):
+    id: int
+    project_id: int
+
+    class Config:
+        orm_mode = True
+
+class AnnotationBase(BaseModel):
+    x_min: float = Field(..., example=100.5)
+    y_min: float = Field(..., example=200.0)
+    x_max: float = Field(..., example=150.5)
+    y_max: float = Field(..., example=250.0)
+    confidence_score: Optional[float] = Field(None, example=0.95)
+    source_type: Optional[str] = Field(None, example="yolo_uniow_v1.0")
+    is_unknown: Optional[bool] = Field(False, example=False)
+
+class AnnotationCreate(AnnotationBase):
+    # image_id and label_id will be passed directly to CRUD, not part of this schema
+    # if we build annotations before we have the image/label DB records.
+    # Alternatively, if creating via an image, label_id is essential.
+    # For now, let's assume label_name will be used to find/create label_id in CRUD.
+    label_name: str # We'll use this to find/create the Label record and get its ID.
+
+class Annotation(AnnotationBase):
+    id: int
     image_id: int
     label_id: int
-    x_min: float
-    y_min: float
-    x_max: float
-    y_max: float
-    confidence_score: Optional[float] = None
-    source_type: Optional[str] = None # 'manual', 'yolo-uniow', 'gligen_generated'
-    is_unknown: Optional[bool] = False
+    created_at: datetime # Should be populated by DB default
+    updated_at: Optional[datetime] = None # Should be populated by DB on update
 
     class Config:
         orm_mode = True
-
 
 # --- API Specific Schemas (matching Label Studio ML Backend expectations where applicable) ---
 
-# For Label Studio /predict endpoint request (simplified, actual can be more complex)
+class LabelStudioTaskDataItem(BaseModel):
+    # Flexible data part of a task, often contains 'image' or other keys based on LS config
+    image: Optional[str] = None # Example: value of <Image name="image" value="$image_url" />
+    # Add other potential keys if your LS configs use them, e.g. text: Optional[str] = None
+
 class LabelStudioTaskItem(BaseModel):
-    id: int # Task ID
-    data: Dict[str, Any] # Typically {"image": "url_or_path_to_image"}
+    id: int # Task ID from Label Studio
+    data: LabelStudioTaskDataItem # More specific data type
 
 class LabelStudioRequest(BaseModel):
     tasks: List[LabelStudioTaskItem]
-    label_config: Optional[str] = None # XML Labeling config
-    project: Optional[str] = None # Project ID from Label Studio
-    params: Optional[Dict[str, Any]] = None # Other params like context
+    label_config: Optional[str] = Field(None, description="Label Studio XML Labeling Configuration")
+    project: Optional[str] = Field(None, description="Project ID from Label Studio (can be string ID)")
+    params: Optional[Dict[str, Any]] = Field(None, description="Other params like context from LS")
 
-# For Label Studio /predict endpoint response
 class LSAnnotationResultItemValue(BaseModel):
-    # For rectanglelabels
     rectanglelabels: Optional[List[str]] = None
     x: Optional[float] = None
     y: Optional[float] = None
     width: Optional[float] = None
     height: Optional[float] = None
-    # Add other types like choices, keypoints etc. if needed
-    # Example for choices:
-    # choices: Optional[List[str]] = None
+    # Add other LS types like: choices: Optional[List[str]] = None
 
 class LSAnnotationResultItem(BaseModel):
     from_name: str
     to_name: str
-    type: str # e.g., "rectanglelabels", "choices"
+    type: str # e.g., "rectanglelabels"
     value: LSAnnotationResultItemValue
-    score: Optional[float] = None # Confidence for this specific annotation item
+    score: Optional[float] = None
 
 class LSPredictionItem(BaseModel):
     result: List[LSAnnotationResultItem]
     score: Optional[float] = None # Overall confidence for the task's prediction
     model_version: Optional[str] = None
-    # cluster: Optional[Any] = None # For active learning
-    # neighbors: Optional[Any] = None # For active learning
-    # mislabeling: Optional[float] = 0 # For active learning
 
 # --- Schemas for our custom generation/suggestion endpoints ---
 
 class ObjectGenerationRequest(BaseModel):
-    image_path: str # Path to background image
+    image_path: str
     target_bbox: List[float] = Field(..., min_items=4, max_items=4) # [x_min, y_min, x_max, y_max]
     text_prompt: str
-    project_id: int
+    project_id: int # Assuming project_id is passed to know where to associate the generated image
 
 class ObjectGenerationResponse(BaseModel):
     new_image_path: str
-    annotation: Annotation # The annotation for the newly generated object
+    annotation: Annotation # Returns the full Annotation schema for the new object
 
 class SceneEditRequest(BaseModel):
     image_path: str
-    mask_data: str # Could be path to mask image or base64 encoded mask
+    mask_data: str
     text_prompt: str
     project_id: int
 
@@ -113,9 +140,8 @@ class SceneEditResponse(BaseModel):
 
 class PromptSuggestionRequest(BaseModel):
     base_keyword: str
-    project_id: Optional[int] = None # Context for suggestions
+    project_id: Optional[int] = None
 
 class PromptSuggestionResponse(BaseModel):
     suggestions: List[str]
-
 ```
