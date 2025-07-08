@@ -14,11 +14,10 @@ logger = logging.getLogger(__name__)
 
 # --- Pydantic Models for Request and Response ---
 class InferenceRequest(BaseModel):
-    image_path: str # Or image_bytes: bytes, or image_url: str
-    # Add any other parameters the model needs, e.g., confidence_threshold
+    image_path: str # Path to the image, accessible by this server
     confidence_threshold: float = 0.25
 
-class BoundingBox(BaseModel):
+class PredictedBoundingBox(BaseModel): # Renamed for clarity from internal BoundingBox
     x_min: float
     y_min: float
     x_max: float
@@ -27,7 +26,9 @@ class BoundingBox(BaseModel):
     score: float
 
 class InferenceResponse(BaseModel):
-    predictions: List[BoundingBox]
+    predictions: List[PredictedBoundingBox]
+    model_name: str = "YOLO-UniOW_Mock"
+    version: str = "0.1.0"
 
 # --- FastAPI Application ---
 app = FastAPI(
@@ -51,8 +52,8 @@ app = FastAPI(
 #         # Actual preprocessing, inference, and postprocessing would go here
 #         # For now, return mocked data
 #         mock_predictions = [
-#             BoundingBox(x_min=50, y_min=50, x_max=150, y_max=150, label="known_object_1", score=0.85),
-#             BoundingBox(x_min=200, y_min=100, x_max=250, y_max=180, label="unknown", score=0.70),
+#             PredictedBoundingBox(x_min=50, y_min=50, x_max=150, y_max=150, label="known_object_1", score=0.85),
+#             PredictedBoundingBox(x_min=200, y_min=100, x_max=250, y_max=180, label="unknown", score=0.70),
 #         ]
 #         return [p for p in mock_predictions if p.score >= confidence_threshold]
 
@@ -68,30 +69,46 @@ async def startup_event():
 @app.post("/infer", response_model=InferenceResponse, summary="Perform Object Detection")
 async def infer(request: InferenceRequest = Body(...)):
     """
-    Receives an image path (or data) and returns object detection predictions.
+    Receives an image path and returns object detection predictions.
+    The image path should be accessible by this server (e.g., a shared volume).
     """
-    logger.info(f"Received inference request for image: {request.image_path}")
+    logger.info(f"Received inference request for image: {request.image_path} with threshold: {request.confidence_threshold}")
+
+    # Simulate file access check (in real scenario, you'd try to load the image)
+    # For example: if not os.path.exists(request.image_path):
+    # logger.error(f"Image not found at path: {request.image_path}")
+    # raise HTTPException(status_code=404, detail=f"Image not found: {request.image_path}")
+
     try:
         # In a real implementation:
-        # image = load_image(request.image_path) # Function to load image
-        # predictions = model.predict(image, request.confidence_threshold)
+        # image = Image.open(request.image_path) # Example using Pillow
+        # results = actual_yolo_model.predict(image, conf=request.confidence_threshold)
+        # predictions = format_results_to_predictedboundingbox(results)
 
         # Mocked prediction logic:
-        if "error" in request.image_path: # Simulate an error
+        if "error_test_image.jpg" in request.image_path: # Simulate an error for a specific image
+            logger.error("Simulated processing error for image 'error_test_image.jpg'.")
             raise ValueError("Simulated processing error for image.")
 
-        predictions = [
-            BoundingBox(x_min=50, y_min=50, x_max=150, y_max=150, label="mock_car", score=0.92),
-            BoundingBox(x_min=200, y_min=100, x_max=280, y_max=190, label="unknown", score=0.75),
+        # Example mock predictions
+        raw_predictions = [
+            PredictedBoundingBox(x_min=50.0, y_min=50.0, x_max=150.0, y_max=150.0, label="mock_car", score=0.92),
+            PredictedBoundingBox(x_min=200.0, y_min=100.0, x_max=280.0, y_max=190.0, label="unknown", score=0.75),
+            PredictedBoundingBox(x_min=10.0, y_min=10.0, x_max=40.0, y_max=40.0, label="low_score_obj", score=0.15),
         ]
-        # Filter by confidence if model doesn't do it internally
-        # predictions = [p for p in raw_predictions if p.score >= request.confidence_threshold]
 
-        logger.info(f"Returning {len(predictions)} predictions.")
+        # Filter by confidence (as a real model might do, or post-process here)
+        predictions = [p for p in raw_predictions if p.score >= request.confidence_threshold]
+
+        logger.info(f"Returning {len(predictions)} predictions for {request.image_path}.")
         return InferenceResponse(predictions=predictions)
+
+    except ValueError as ve: # Specific error handling
+        logger.error(f"ValueError during inference for {request.image_path}: {ve}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(ve)) # Bad request if value error
     except Exception as e:
-        logger.error(f"Error during inference: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Generic error during inference for {request.image_path}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error during inference: {e}")
 
 @app.get("/health", summary="Health Check")
 async def health_check():

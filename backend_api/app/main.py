@@ -13,7 +13,16 @@ async def root():
 
 # Further router includes will go here
 from .api import endpoints
+from .db import database # Import database module
+
+# Create database tables on startup
+@app.on_event("startup")
+async def startup_db_client():
+    database.create_db_and_tables()
+    print("Database tables checked/created.")
+
 app.include_router(endpoints.router, prefix="/api/v1", tags=["ML Backend"])
+
 
 if __name__ == "__main__":
     import uvicorn

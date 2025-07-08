@@ -52,11 +52,12 @@ services:
       - yolo_uniow_model_server # Add dependencies as more model servers come online
     networks:
       - agile_ai_network
-    # healthcheck: # Optional healthcheck
-    #   test: ["CMD", "curl", "-f", "http://localhost:8000/"]
-    #   interval: 30s
-    #   timeout: 10s
-    #   retries: 3
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/"] # FastAPI root path
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s # Give it time to start up, especially with DB creation
 
   yolo_uniow_model_server:
     build:
@@ -81,6 +82,12 @@ services:
               capabilities: [gpu]
     networks:
       - agile_ai_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"] # Health endpoint in yolo_uniow/serve.py
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s # Give it time for model loading if any
 
   # --- Placeholder services for other models (uncomment and configure as developed) ---
   # grounding_dino_model_server:

@@ -57,12 +57,35 @@ async def predict_annotations(
         #     continue
         # --------------------------------------------------------------------
 
-        # Mocked YOLO results for demonstration
-        mock_yolo_results = [
-            {"x_min": 10.0, "y_min": 20.0, "x_max": 40.0, "y_max": 60.0, "label": "car", "score": 0.95},
-            {"x_min": 50.0, "y_min": 60.0, "x_max": 80.0, "y_max": 90.0, "label": "person", "score": 0.88},
-            {"x_min": 100.0, "y_min": 100.0, "x_max": 120.0, "y_max": 120.0, "label": "unknown", "score": 0.65}, # Example of 'unknown'
-        ]
+        # Call the YOLO-UniOW model server
+        yolo_request_payload = {
+            "image_path": image_url_or_path, # This path must be accessible by the YOLO server
+                                             # (e.g., via a shared Docker volume mounted at the same path)
+            "confidence_threshold": 0.2 # Example threshold, could be configurable
+        }
+        model_predictions = []
+        model_version_str = "yolo_uniow_mock_v0.1" # Default if server call fails
+
+        try:
+            print(f"Calling YOLO server at {settings.YOLO_UNIOW_SERVER_URL} for task {task.id}")
+            response = await client.post(settings.YOLO_UNIOW_SERVER_URL, json=yolo_request_payload, timeout=30.0)
+            response.raise_for_status() # Raise an exception for bad status codes
+
+            yolo_server_response = response.json()
+            model_predictions = yolo_server_response.get("predictions", [])
+            model_version_str = f"{yolo_server_response.get('model_name', 'yolo_uniow')}_v{yolo_server_response.get('version', 'unknown')}"
+            print(f"Received {len(model_predictions)} predictions from YOLO server for task {task.id}")
+
+        except httpx.RequestError as e:
+            print(f"Error calling YOLO-UniOW server for task {task.id} (image: {image_url_or_path}): {e}")
+            # Fallback to empty predictions for this task if model server call fails
+            api_predictions.append(schemas.LSPredictionItem(result=[], model_version=model_version_str))
+            continue
+        except Exception as e: # Catch other potential errors like JSON decoding or unexpected response structure
+            print(f"Generic error processing task {task.id} with YOLO-UniOW server: {e}")
+            api_predictions.append(schemas.LSPredictionItem(result=[], model_version=model_version_str))
+            continue
+
 
         # Determine from_name and to_name from label_config (simplified parsing)
         # A more robust parsing of label_config XML might be needed for complex configs
@@ -80,29 +103,32 @@ async def predict_annotations(
                     print("Could not parse from_name/to_name from label_config, using defaults.")
 
 
-        # Format mock_yolo_results into Label Studio prediction format
+        # Format model_predictions (from YOLO server) into Label Studio prediction format
         ls_results_for_task: List[schemas.LSAnnotationResultItem] = []
-        for yolo_pred in mock_yolo_results:
-            ls_results_for_task.append(
-                schemas.LSAnnotationResultItem(
-                    from_name=from_name_found,
-                    to_name=to_name_found,
-                    type="rectanglelabels", # Assuming detection model provides rectangles
-                    value=schemas.LSAnnotationResultItemValue(
-                        rectanglelabels=[yolo_pred["label"]],
-                        x=yolo_pred["x_min"],
-                        y=yolo_pred["y_min"],
-                        width=(yolo_pred["x_max"] - yolo_pred["x_min"]),
-                        height=(yolo_pred["y_max"] - yolo_pred["y_min"]),
-                    ),
-                    score=yolo_pred["score"]
+        if model_predictions: # Ensure there are predictions to process
+            for yolo_pred in model_predictions:
+                # yolo_pred is now expected to be a dict from the JSON response
+                # e.g. {'x_min': 50.0, 'y_min': 50.0, 'x_max': 150.0, 'y_max': 150.0, 'label': 'mock_car', 'score': 0.92}
+                ls_results_for_task.append(
+                    schemas.LSAnnotationResultItem(
+                        from_name=from_name_found,
+                        to_name=to_name_found,
+                        type="rectanglelabels",
+                        value=schemas.LSAnnotationResultItemValue(
+                            rectanglelabels=[yolo_pred.get("label", "unknown_label")], # Use .get for safety
+                            x=yolo_pred.get("x_min", 0.0),
+                            y=yolo_pred.get("y_min", 0.0),
+                            width=(yolo_pred.get("x_max", 0.0) - yolo_pred.get("x_min", 0.0)),
+                            height=(yolo_pred.get("y_max", 0.0) - yolo_pred.get("y_min", 0.0)),
+                        ),
+                        score=yolo_pred.get("score", 0.0)
+                    )
                 )
-            )
 
         api_predictions.append(schemas.LSPredictionItem(
             result=ls_results_for_task,
-            score=max((res.score for res in ls_results_for_task if res.score is not None), default=0), # Overall task score
-            model_version=f"mock_yolo_uniow_v0.1_task_{task.id}" # Example model version
+            score=max((res.score for res in ls_results_for_task if res.score is not None), default=0) if ls_results_for_task else 0,
+            model_version=model_version_str
         ))
 
     return api_predictions
@@ -169,9 +195,17 @@ async def edit_scene(
     """
     print(f"Received /edit_scene request for project {request_data.project_id} on image {request_data.image_path}")
     # TODO: Implement call to ControlNet model service
+    # controlnet_payload = { ... }
+    # response = await client.post(settings.CONTROLNET_SERVER_URL, json=controlnet_payload, timeout=180.0)
+    # response.raise_for_status()
+    # controlnet_result = response.json()
+    # 1. Save the edited image (returned as path or bytes by ControlNet server)
+    # 2. Store metadata in DB (e.g., link to original image, generation params)
+
     # Mocked response
     mock_edited_path = f"{settings.IMAGE_STORAGE_BASE_PATH}/project_{request_data.project_id}/generated/controlnet_mock_{request_data.image_path.split('/')[-1]}"
     print(f"Mocked ControlNet edit. Output path: {mock_edited_path}")
+    # This response should ideally include more info, like DB record ID of the new image.
     return schemas.SceneEditResponse(edited_image_path=mock_edited_path)
 
 @router.post("/suggest_prompts",
@@ -188,12 +222,18 @@ async def suggest_prompts(
     """
     print(f"Received /suggest_prompts request for keyword: {request_data.base_keyword}")
     # TODO: Implement call to InternVL2 model service
+    # internvl2_payload = {"keyword": request_data.base_keyword, "context": "..." }
+    # response = await client.post(settings.INTERNVL2_SERVER_URL, json=internvl2_payload, timeout=60.0)
+    # response.raise_for_status()
+    # suggestions_result = response.json() # e.g., {"suggestions": []}
+
     # Mocked response
     mock_suggestions = [
-        f"A high-quality, photorealistic image of a {request_data.base_keyword} in a sunlit environment.",
-        f"Close-up studio shot of a {request_data.base_keyword}, highly detailed.",
-        f"An artistic rendering of a {request_data.base_keyword} in a surreal landscape."
+        f"A high-quality, photorealistic image of a {request_data.base_keyword} in a sunlit environment, 4k, detailed.",
+        f"Close-up studio shot of a {request_data.base_keyword}, highly detailed, dramatic lighting.",
+        f"An artistic rendering of a {request_data.base_keyword} in a surreal landscape, concept art."
     ]
+    print(f"Mocked InternVL2 suggestions for '{request_data.base_keyword}'.")
     return schemas.PromptSuggestionResponse(suggestions=mock_suggestions)
 
 @router.post("/setup", summary="ML Backend Setup/Health Check (Optional)")
