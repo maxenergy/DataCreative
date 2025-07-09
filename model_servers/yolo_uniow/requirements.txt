@@ -1,0 +1,14 @@
+```
+fastapi>=0.95.0,<0.111.0
+uvicorn[standard]>=0.21.0,<0.28.0
+pydantic>=1.10.0,<2.7.0
+
+# Add ML specific libraries here
+# For YOLO, you'd typically need PyTorch and torchvision
+# torch>=1.13.0
+# torchvision>=0.14.0
+# ultralytics (if using YOLOv8 or similar from Ultralytics)
+
+# Placeholder for now, as actual model code is mocked
+# Add other dependencies like OpenCV (opencv-python-headless), numpy, etc. as needed
+```
