@@ -22,7 +22,7 @@ class Project(ProjectBase):
         orm_mode = True
 
 class ImageBase(BaseModel):
-    original_file_path: str = Field(..., example="/data/images/project_1/original/img_001.jpg")
+    original_file_path: Optional[str] = Field(None, example="/data/images/project_1/original/img_001.jpg") # Made optional
     generated_file_path: Optional[str] = Field(None, example="/data/images/project_1/generated/img_001_gen.jpg")
     width: Optional[int] = Field(None, example=1920)
     height: Optional[int] = Field(None, example=1080)
@@ -120,13 +120,14 @@ class LSPredictionItem(BaseModel):
 # --- Schemas for our custom generation/suggestion endpoints ---
 
 class ObjectGenerationRequest(BaseModel):
-    image_path: str
-    target_bbox: List[float] = Field(..., min_items=4, max_items=4) # [x_min, y_min, x_max, y_max]
-    text_prompt: str
-    project_id: int # Assuming project_id is passed to know where to associate the generated image
+    source_image_path: Optional[str] = Field(None, description="Path to an existing background image, if any.")
+    target_bbox: List[float] = Field(..., min_items=4, max_items=4, description="[x_min, y_min, x_max, y_max] for object placement.")
+    text_prompt: str = Field(..., description="Text prompt describing the object to generate.")
+    label_name_for_generated_object: str = Field(..., description="The class label to assign to the generated object.")
+    project_id: int
 
 class ObjectGenerationResponse(BaseModel):
-    new_image_path: str
+    new_image_path: str # Path to the newly created image (will be the generated_file_path)
     annotation: Annotation # Returns the full Annotation schema for the new object
 
 class SceneEditRequest(BaseModel):
