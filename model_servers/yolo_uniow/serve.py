@@ -7,17 +7,23 @@ import logging # For logging
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+import os # For path joining and environment variables
 
 # This is a placeholder for actual model loading and inference.
 # In a real scenario, you would load your YOLO-UniOW model here (e.g., using PyTorch).
 # For now, we'll mock the inference.
 
+# --- Configuration ---
+IMAGE_BASE_DIR_INSIDE_CONTAINER = os.getenv("IMAGE_BASE_DIR", "/model_server/data/images/")
+logger.info(f"YOLO Server using IMAGE_BASE_DIR: {IMAGE_BASE_DIR_INSIDE_CONTAINER}")
+
+
 # --- Pydantic Models for Request and Response ---
 class InferenceRequest(BaseModel):
-    image_path: str # Path to the image, accessible by this server
+    image_path: str # Path to the image, RELATIVE to IMAGE_BASE_DIR_INSIDE_CONTAINER
     confidence_threshold: float = 0.25
 
-class PredictedBoundingBox(BaseModel): # Renamed for clarity from internal BoundingBox
+class PredictedBoundingBox(BaseModel):
     x_min: float
     y_min: float
     x_max: float
@@ -69,25 +75,27 @@ async def startup_event():
 @app.post("/infer", response_model=InferenceResponse, summary="Perform Object Detection")
 async def infer(request: InferenceRequest = Body(...)):
     """
-    Receives an image path and returns object detection predictions.
-    The image path should be accessible by this server (e.g., a shared volume).
+    Receives a RELATIVE image path and returns object detection predictions.
+    The image path is joined with IMAGE_BASE_DIR_INSIDE_CONTAINER to get the absolute path.
     """
-    logger.info(f"Received inference request for image: {request.image_path} with threshold: {request.confidence_threshold}")
+    absolute_image_path = os.path.join(IMAGE_BASE_DIR_INSIDE_CONTAINER, request.image_path)
+    logger.info(f"Received inference request for relative path: {request.image_path}, resolved to: {absolute_image_path}, threshold: {request.confidence_threshold}")
 
     # Simulate file access check (in real scenario, you'd try to load the image)
-    # For example: if not os.path.exists(request.image_path):
-    # logger.error(f"Image not found at path: {request.image_path}")
-    # raise HTTPException(status_code=404, detail=f"Image not found: {request.image_path}")
+    # For example:
+    # if not os.path.exists(absolute_image_path):
+    #     logger.error(f"Image not found at resolved path: {absolute_image_path}")
+    #     raise HTTPException(status_code=404, detail=f"Image not found at resolved path: {absolute_image_path}")
 
     try:
         # In a real implementation:
-        # image = Image.open(request.image_path) # Example using Pillow
+        # image = Image.open(absolute_image_path) # Example using Pillow
         # results = actual_yolo_model.predict(image, conf=request.confidence_threshold)
         # predictions = format_results_to_predictedboundingbox(results)
 
         # Mocked prediction logic:
-        if "error_test_image.jpg" in request.image_path: # Simulate an error for a specific image
-            logger.error("Simulated processing error for image 'error_test_image.jpg'.")
+        if "error_test_image.jpg" in request.image_path: # Simulate an error based on relative path
+            logger.error(f"Simulated processing error for image '{request.image_path}'.")
             raise ValueError("Simulated processing error for image.")
 
         # Example mock predictions
@@ -100,14 +108,14 @@ async def infer(request: InferenceRequest = Body(...)):
         # Filter by confidence (as a real model might do, or post-process here)
         predictions = [p for p in raw_predictions if p.score >= request.confidence_threshold]
 
-        logger.info(f"Returning {len(predictions)} predictions for {request.image_path}.")
+        logger.info(f"Returning {len(predictions)} predictions for {absolute_image_path}.")
         return InferenceResponse(predictions=predictions)
 
     except ValueError as ve: # Specific error handling
-        logger.error(f"ValueError during inference for {request.image_path}: {ve}", exc_info=True)
+        logger.error(f"ValueError during inference for {absolute_image_path}: {ve}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(ve)) # Bad request if value error
     except Exception as e:
-        logger.error(f"Generic error during inference for {request.image_path}: {e}", exc_info=True)
+        logger.error(f"Generic error during inference for {absolute_image_path}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Internal server error during inference: {e}")
 
 @app.get("/health", summary="Health Check")

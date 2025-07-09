@@ -14,11 +14,29 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # --- Configuration ---
-# URL of your FastAPI backend's /predict endpoint
-# Ensure this matches the FastAPI service name and port in docker-compose.yml and the correct endpoint path
-FASTAPI_PREDICT_URL = os.getenv("FASTAPI_PREDICT_URL", "http://backend_api:8000/api/v1/predict")
-# If your FastAPI backend needs an API key (good practice for security)
-FASTAPI_API_KEY = os.getenv("FASTAPI_API_KEY", None) # Example: "your_secret_api_key"
+# URL of your FastAPI backend's /predict endpoint.
+# IMPORTANT NETWORKING CONSIDERATIONS:
+# - If this ML backend script is run ON THE HOST machine (e.g., using `label-studio-ml start .`):
+#   And the FastAPI backend (`backend_api` service) is running in Docker with port 8000 exposed to the host,
+#   then `localhost:8000` (or `127.0.0.1:8000`) should be used.
+# - If this ML backend script is ALSO run as a Docker container WITHIN THE SAME Docker network as `backend_api`:
+#   Then `http://backend_api:8000/...` would be correct.
+# We are assuming the first case for local development and testing with `label-studio-ml start`.
+FASTAPI_PREDICT_URL = os.getenv("FASTAPI_PREDICT_URL", "http://localhost:8000/api/v1/predict")
+
+# If your FastAPI backend needs an API key (good practice for security) - currently not implemented in FastAPI
+FASTAPI_API_KEY = os.getenv("FASTAPI_API_KEY", None)
+
+# Define the assumed root directory on the HOST machine where Label Studio's local file storage is based.
+# This path should correspond to what's mounted into the Docker containers at `./data/images`.
+# Example: If your project root is /home/user/agile-ai-vision, then HOST_DATA_IMAGES_ROOT would be /home/user/agile-ai-vision/data/images
+# It's crucial this is set correctly for local file paths to be made relative.
+# For robustness, this should ideally come from an environment variable.
+HOST_DATA_IMAGES_ROOT = os.getenv("HOST_DATA_IMAGES_ROOT", os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data', 'images')))
+logger.info(f"ML Backend using HOST_DATA_IMAGES_ROOT: {HOST_DATA_IMAGES_ROOT}")
+# Ensure this path exists, or at least warn if it doesn't seem right, although the script doesn't access it directly.
+if not os.path.isdir(HOST_DATA_IMAGES_ROOT) and len(HOST_DATA_IMAGES_ROOT) > 3 : # Basic check
+    logger.warning(f"Configured HOST_DATA_IMAGES_ROOT '{HOST_DATA_IMAGES_ROOT}' does not exist or is not a directory. Path relativity might be incorrect for local files.")
 
 
 class YoloPreannotationBackend(LabelStudioMLBase):
@@ -97,18 +115,53 @@ class YoloPreannotationBackend(LabelStudioMLBase):
                 continue
 
             # The FastAPI endpoint schemas.LabelStudioRequest expects task.data to be a dict.
-            # And its sub-schema schemas.LabelStudioTaskItem expects task.data.image (or the key used in from_name/to_name)
-            # Ensure the data sent to FastAPI matches its expected input schema.
-            # The key in task.data should be the one specified in <Image value="$key_name" />
-            # For simplicity, if self.value is 'image', then task.data = {"image": image_url_or_path} is expected by FastAPI
+            # Its sub-schema schemas.LabelStudioTaskDataItem expects a field like `image`.
+            # The key in `task.data` (e.g., `task.data['image']` or `task.data['my_image_key']`)
+            # is determined by the <Image value="$my_image_key" /> in Label Studio's labeling config.
+            # `self.value` should hold this key (e.g., "my_image_key" or "image").
+
+            # If Label Studio serves images from a local path (e.g., /data/upload/myimage.jpg)
+            # and the ML backend script runs on the host, this path might be directly usable if
+            # the FastAPI backend (in Docker) has this same path mounted as a volume from the host.
+            # Example: Host's /abs/path/to/data/upload/ is mounted to Docker's /app/data/images.
+            # If LS gives path /abs/path/to/data/upload/myimage.jpg, and FastAPI's IMAGE_STORAGE_BASE_PATH
+            # is /app/data/images, then FastAPI needs to know how to map or expect relative paths.
+            # For now, we pass the path as is. The FastAPI backend will use this path to call the
+            # YOLO server, which also needs access to this path (e.g., via another shared volume).
+            # This path mapping across LS <-> ML script (host) <-> FastAPI (Docker) <-> YOLO server (Docker)
+            # is the most complex part of local file handling.
+            # Using URLs served by Label Studio (if configured for cloud storage) simplifies this.
+
+            # Attempt to make the path relative to HOST_DATA_IMAGES_ROOT
+            # This is crucial if image_url_or_path is an absolute path from the host system.
+            processed_image_path = image_url_or_path
+            if os.path.isabs(image_url_or_path) and HOST_DATA_IMAGES_ROOT:
+                if image_url_or_path.startswith(HOST_DATA_IMAGES_ROOT):
+                    processed_image_path = os.path.relpath(image_url_or_path, HOST_DATA_IMAGES_ROOT)
+                    # On Windows, relpath might produce backslashes, ensure forward slashes for cross-platform/URL compatibility
+                    processed_image_path = processed_image_path.replace(os.sep, '/')
+                    logger.info(f"Converted absolute path {image_url_or_path} to relative path {processed_image_path} using root {HOST_DATA_IMAGES_ROOT}")
+                else:
+                    logger.warning(f"Absolute path {image_url_or_path} does not start with HOST_DATA_IMAGES_ROOT {HOST_DATA_IMAGES_ROOT}. Sending path as is. This might fail in backend.")
+            elif "://" in image_url_or_path: # It's a URL, pass as is. Backend needs to handle fetching.
+                logger.info(f"Passing URL {image_url_or_path} as is to backend.")
+                # NOTE: Current backend/YOLO server mock expects file paths, not URLs. This would need handling there.
+                # For now, this test guide focuses on local file paths.
+            else: # Already a relative path or a non-HTTP URL, pass as is.
+                 logger.info(f"Passing path {image_url_or_path} as is (assumed relative or special scheme).")
+
+
+            api_task_data = {image_data_key: processed_image_path}
+            # If other data fields from the task are needed by the backend, add them here.
+
             api_tasks.append({
-                "id": task.get("id", i), # Use original task ID or index if not present
-                "data": {image_data_key: image_url_or_path} # e.g. {"image": "url/path"}
+                "id": task.get("id", i),
+                "data": api_task_data
             })
-            task_id_map[i] = len(api_tasks) -1 # Map original task index to its index in api_tasks
+            task_id_map[i] = len(api_tasks) -1
 
         if not api_tasks:
-            logger.info("No valid tasks with image data to send to backend.")
+            logger.info("No valid tasks with processable image paths to send to backend.")
             # Return empty predictions for all original tasks
             return [{"result": [], "score": 0} for _ in tasks]
 

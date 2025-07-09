@@ -71,6 +71,7 @@ services:
     # ports: # Not strictly needed if only backend_api accesses it
       # - "8001:8001"
     environment:
+      - IMAGE_BASE_DIR=/model_server/data/images/ # Base path inside this container for relative image paths
       # - MODEL_PATH=/model_server/weights/yolo_model.pt
       - NVIDIA_VISIBLE_DEVICES=all # If using GPU
     deploy: # For GPU support with docker-compose v2.3+
